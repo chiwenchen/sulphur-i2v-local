@@ -25,3 +25,4 @@ models/
 
 # Logs
 *.log
+vendor/
