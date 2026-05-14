@@ -25,14 +25,22 @@ DEFAULT_VAE = "LTX23_video_vae_bf16.safetensors"
 # In ComfyUI 0.21+, CLIPType.LTXV is the Gemma 3 12B / LTX-AV text encoder pair.
 DEFAULT_TEXT_ENCODER = "gemma-3-12b-it-Q4_K_S.gguf"
 DEFAULT_TEXT_PROJECTION = "ltx-2.3_text_projection_bf16.safetensors"
+# Distilled LoRA shipped with Sulphur-2-base; lets us use ~15 steps instead of 30+.
+DEFAULT_DISTILL_LORA = "ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors"
+DEFAULT_LORA_STRENGTH = 0.5
 
-# Inference defaults tuned for 16 GB Apple Silicon.
+# Inference defaults tuned for 16 GB Apple Silicon + LTX-2.3 (dev variant + distilled LoRA).
 DEFAULT_WIDTH = 512
 DEFAULT_HEIGHT = 320
-DEFAULT_LENGTH = 49  # frames; LTX wants 9 + 8k
-DEFAULT_STEPS = 8  # distilled-friendly low step count
-DEFAULT_GUIDANCE = 3.0
+DEFAULT_LENGTH = 49      # frames; LTX wants 9 + 8k
+DEFAULT_STEPS = 15       # with distilled LoRA at 0.5; needs 25-30+ without LoRA
+DEFAULT_GUIDANCE = 3.5   # LTX-2.3 official workflow uses 3.6
 DEFAULT_FRAME_RATE = 24
+
+# LTX-2.3 scheduler hyperparameters (from official ComfyUI template, not 0.9 defaults).
+LTX23_MAX_SHIFT = 2.72
+LTX23_BASE_SHIFT = 0.8
+LTX23_TERMINAL = 0.0
 
 
 class ProgressCallback(Protocol):
@@ -59,24 +67,40 @@ def build_i2v_workflow(
     vae: str = DEFAULT_VAE,
     text_encoder: str = DEFAULT_TEXT_ENCODER,
     text_projection: str = DEFAULT_TEXT_PROJECTION,
+    distill_lora: str | None = DEFAULT_DISTILL_LORA,
+    lora_strength: float = DEFAULT_LORA_STRENGTH,
     output_prefix: str = "i2v",
 ) -> dict[str, dict[str, Any]]:
-    """Build a minimal LTX-2.3 I2V workflow JSON in ComfyUI API format.
+    """Build an LTX-2.3 I2V workflow JSON in ComfyUI API format.
 
     Node graph:
-        Unet (GGUF) ─┐
-                     ├─> SamplerCustomAdvanced ─> VAEDecode ─> CreateVideo ─> SaveVideo
+        Unet (GGUF) ─> [LoRA] ─┐
+                                ├─> SamplerCustomAdvanced ─> VAEDecode ─> CreateVideo ─> SaveVideo
         CLIP ─> Encode(pos/neg) ─> LTXVImgToVideo ─> LTXVConditioning ─┘
-        Image ─┘                      ▲
-        VAE ────────────────────────  │
-                                       │
-                          RandomNoise + KSamplerSelect + Scheduler + CFGGuider
+        Image ─┘                       ▲
+        VAE ─────────────────────────  │
+                                        │
+                          RandomNoise + KSamplerSelect + LTXVScheduler + CFGGuider
     """
     workflow: dict[str, dict[str, Any]] = {
         "unet_loader": {
             "class_type": "UnetLoaderGGUF",
             "inputs": {"unet_name": transformer_gguf},
         },
+        **(
+            {
+                "lora_loader": {
+                    "class_type": "LoraLoaderModelOnly",
+                    "inputs": {
+                        "model": ["unet_loader", 0],
+                        "lora_name": distill_lora,
+                        "strength_model": lora_strength,
+                    },
+                }
+            }
+            if distill_lora
+            else {}
+        ),
         "text_encoder_loader": {
             # DualCLIPLoaderGGUF (from city96/ComfyUI-GGUF) handles GGUF + safetensors
             # mixed loading. type="ltxv" → CLIPType.LTXV → Gemma 3 12B pipeline.
@@ -131,22 +155,25 @@ def build_i2v_workflow(
         },
         "sampler_select": {
             "class_type": "KSamplerSelect",
-            "inputs": {"sampler_name": "euler"},
+            # euler_ancestral matches the official LTX-2.3 ComfyUI template
+            "inputs": {"sampler_name": "euler_ancestral"},
         },
         "scheduler": {
             "class_type": "LTXVScheduler",
+            # LTX-2.3 official scheduler hyperparameters; 0.9.x defaults give
+            # under-denoised, posterized output on the new architecture.
             "inputs": {
                 "steps": steps,
-                "max_shift": 2.05,
-                "base_shift": 0.95,
+                "max_shift": LTX23_MAX_SHIFT,
+                "base_shift": LTX23_BASE_SHIFT,
                 "stretch": True,
-                "terminal": 0.1,
+                "terminal": LTX23_TERMINAL,
             },
         },
         "guider": {
             "class_type": "CFGGuider",
             "inputs": {
-                "model": ["unet_loader", 0],
+                "model": ["lora_loader", 0] if distill_lora else ["unet_loader", 0],
                 "positive": ["conditioning", 0],
                 "negative": ["conditioning", 1],
                 "cfg": guidance,

@@ -80,6 +80,32 @@ class TestBuildWorkflow:
                         f"Node {node_id} field {k} references missing node {referenced!r}"
                     )
 
+    def test_lora_present_by_default_and_feeds_guider(self) -> None:
+        wf = build_i2v_workflow(image_filename="i.png", prompt="x", seed=0)
+        assert "lora_loader" in wf
+        assert wf["lora_loader"]["class_type"] == "LoraLoaderModelOnly"
+        # Guider must consume the LoRA-patched model, not the raw unet
+        assert wf["guider"]["inputs"]["model"] == ["lora_loader", 0]
+
+    def test_lora_can_be_disabled(self) -> None:
+        wf = build_i2v_workflow(
+            image_filename="i.png", prompt="x", seed=0, distill_lora=None
+        )
+        assert "lora_loader" not in wf
+        assert wf["guider"]["inputs"]["model"] == ["unet_loader", 0]
+
+    def test_scheduler_uses_ltx23_params_not_09(self) -> None:
+        """LTX-2.3 needs max_shift=2.72, base_shift=0.8, terminal=0; 0.9 defaults give garbage."""
+        wf = build_i2v_workflow(image_filename="i.png", prompt="x", seed=0)
+        sched = wf["scheduler"]["inputs"]
+        assert sched["max_shift"] == 2.72
+        assert sched["base_shift"] == 0.8
+        assert sched["terminal"] == 0.0
+
+    def test_sampler_is_euler_ancestral(self) -> None:
+        wf = build_i2v_workflow(image_filename="i.png", prompt="x", seed=0)
+        assert wf["sampler_select"]["inputs"]["sampler_name"] == "euler_ancestral"
+
 
 class TestComfyUIClient:
     """Tests for the HTTP client. Uses httpx MockTransport to avoid network."""
