@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.uv-cache/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Outputs (generated videos + input copies)
+outputs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Models / hf cache (huge)
+.hf-cache/
+models/
+
+# Logs
+*.log
