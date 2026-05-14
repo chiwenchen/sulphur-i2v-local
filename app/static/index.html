@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LTX-2.3 Image-to-Video</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>LTX-2.3 Image-to-Video</h1>
+      <p class="subtitle">Local · Apple Silicon · ComfyUI backend</p>
+      <p id="backend-status" class="status">checking backend…</p>
+    </header>
+
+    <section class="card">
+      <h2>1. Source image</h2>
+      <label for="image-input" class="dropzone" id="dropzone">
+        <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+        <div class="dropzone-empty">
+          <strong>Click or drop an image</strong>
+          <small>PNG / JPG / WebP, up to ~4 MB</small>
+        </div>
+        <img id="preview" class="dropzone-preview" hidden alt="preview">
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>2. Prompt</h2>
+      <textarea id="prompt" rows="3" placeholder="describe the motion you want, e.g. slow zoom on the scene, cinematic"></textarea>
+      <details class="advanced">
+        <summary>Advanced parameters</summary>
+        <div class="grid">
+          <label>Negative prompt
+            <input id="negative-prompt" type="text" placeholder="static, blurry, low quality">
+          </label>
+          <label>Seed (-1 = random)
+            <input id="seed" type="number" value="-1">
+          </label>
+          <label>Width
+            <input id="width" type="number" value="512" step="32" min="256" max="1024">
+          </label>
+          <label>Height
+            <input id="height" type="number" value="320" step="32" min="256" max="1024">
+          </label>
+          <label>Length (frames; 9 + 8k)
+            <input id="length" type="number" value="49" step="8" min="9" max="121">
+          </label>
+          <label>Steps
+            <input id="steps" type="number" value="8" min="2" max="50">
+          </label>
+          <label>Guidance scale
+            <input id="guidance" type="number" value="3.0" step="0.1" min="1" max="10">
+          </label>
+          <label>Frame rate (fps)
+            <input id="frame-rate" type="number" value="24" min="8" max="60">
+          </label>
+        </div>
+      </details>
+    </section>
+
+    <section class="card">
+      <button id="generate" type="button" disabled>Generate video</button>
+      <p id="progress-msg" class="status"></p>
+      <div id="progress-wrap" hidden>
+        <progress id="progress-bar" value="0" max="100"></progress>
+      </div>
+    </section>
+
+    <section id="result" class="card" hidden>
+      <h2>Result</h2>
+      <video id="video" controls preload="auto" playsinline></video>
+      <div class="actions">
+        <a id="download" download href="#">Download mp4</a>
+        <button id="reset" type="button">Generate another</button>
+      </div>
+    </section>
+
+    <footer>
+      <small>
+        Model: <code>SulphurAI / vantagewithai/LTX2.3-10Eros-GGUF (Q3_K_S)</code> ·
+        Text encoder: <code>Gemma 3 12B (Q4_K_S)</code> ·
+        VAE: <code>Lightricks LTX-2.3</code>
+      </small>
+    </footer>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
