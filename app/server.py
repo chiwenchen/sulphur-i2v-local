@@ -20,11 +20,14 @@ from app.pipeline import (
     DEFAULT_GUIDANCE,
     DEFAULT_HEIGHT,
     DEFAULT_LENGTH,
+    DEFAULT_NUM_CHAINS,
     DEFAULT_STEPS,
     DEFAULT_WIDTH,
     ComfyUIClient,
     ComfyUIError,
     build_i2v_workflow,
+    concat_mp4s,
+    extract_last_frame,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,11 +87,14 @@ def create_app(tracker: JobTracker | None = None) -> FastAPI:
         steps: int = Form(DEFAULT_STEPS),
         guidance: float = Form(DEFAULT_GUIDANCE),
         frame_rate: int = Form(DEFAULT_FRAME_RATE),
+        num_chains: int = Form(DEFAULT_NUM_CHAINS),
     ) -> JSONResponse:
         if not prompt.strip():
             raise HTTPException(status_code=422, detail="prompt is required")
         if image.content_type and not image.content_type.startswith("image/"):
             raise HTTPException(status_code=422, detail=f"not an image: {image.content_type}")
+        if num_chains < 1 or num_chains > 8:
+            raise HTTPException(status_code=422, detail="num_chains must be 1..8")
 
         # Save the uploaded image to a stable location
         input_id = uuid.uuid4().hex
@@ -109,6 +115,7 @@ def create_app(tracker: JobTracker | None = None) -> FastAPI:
             "steps": steps,
             "guidance": guidance,
             "frame_rate": frame_rate,
+            "num_chains": num_chains,
         }
 
         job = await app.state.tracker.try_claim(prompt, params, str(input_path))
@@ -146,7 +153,12 @@ def create_app(tracker: JobTracker | None = None) -> FastAPI:
 
 
 async def _run_job(app: FastAPI, job: Job, input_path: Path) -> None:
-    """Background task: drive the ComfyUI workflow for a single job."""
+    """Background task: drive the ComfyUI workflow for a single job.
+
+    In chain mode (num_chains > 1), generate one segment per chain. Segment 0 uses
+    the user's uploaded image; segment N>0 uses the last frame of segment N-1. All
+    segments are concatenated into a single final mp4.
+    """
     tracker: JobTracker = app.state.tracker
     try:
         await tracker.mark_running(job.job_id)
@@ -155,46 +167,68 @@ async def _run_job(app: FastAPI, job: Job, input_path: Path) -> None:
         def _do_generation() -> str:
             client = ComfyUIClient(base_url=COMFYUI_BASE_URL, timeout=60.0)
             try:
-                # Upload the image to ComfyUI
-                uploaded_name = client.upload_image(input_path, dest_name=input_path.name)
                 p = job.params
-                wf = build_i2v_workflow(
-                    image_filename=uploaded_name,
-                    prompt=p["prompt"],
-                    negative_prompt=p.get("negative_prompt", ""),
-                    seed=p["seed"],
-                    width=p["width"],
-                    height=p["height"],
-                    length=p["length"],
-                    steps=p["steps"],
-                    guidance=p["guidance"],
-                    frame_rate=p["frame_rate"],
-                    output_prefix=f"i2v_{job.job_id[:8]}",
-                )
-                prompt_id = client.submit(wf)
+                num_chains = int(p.get("num_chains", 1))
+                base_seed = int(p["seed"])
+                segments: list[Path] = []
+                current_input = input_path
+                # Per-segment work directory under outputs/segments/{job_id}/
+                seg_dir = OUTPUTS_DIR / "segments" / job.job_id
+                seg_dir.mkdir(parents=True, exist_ok=True)
 
-                def progress_cb(p: float) -> None:
-                    asyncio.run_coroutine_threadsafe(
-                        tracker.update_progress(job.job_id, p), loop
+                for chain_idx in range(num_chains):
+                    uploaded_name = client.upload_image(
+                        current_input,
+                        dest_name=f"{job.job_id[:8]}_chain{chain_idx}_{current_input.name}",
                     )
+                    wf = build_i2v_workflow(
+                        image_filename=uploaded_name,
+                        prompt=p["prompt"],
+                        negative_prompt=p.get("negative_prompt", ""),
+                        seed=base_seed + chain_idx,  # reproducible-but-varying per segment
+                        width=p["width"],
+                        height=p["height"],
+                        length=p["length"],
+                        steps=p["steps"],
+                        guidance=p["guidance"],
+                        frame_rate=p["frame_rate"],
+                        output_prefix=f"i2v_{job.job_id[:8]}_seg{chain_idx}",
+                    )
+                    prompt_id = client.submit(wf)
 
-                entry = client.wait_for(prompt_id, poll_interval=3.0, max_wait=3600, progress_cb=progress_cb)
-                rel = client.find_output_video(entry)
-                if rel is None:
-                    raise ComfyUIError(f"no video in outputs: {entry.get('outputs')}")
-                # The relative path is like "output/i2v_xxx_00001_.mp4"
-                # ComfyUI's --output-directory is COMFYUI_OUTPUTS_DIR so video lives there
-                src = COMFYUI_OUTPUTS_DIR / rel.name
-                if not src.exists():
-                    # Sometimes the saver creates with a subfolder
+                    def progress_cb(seg_p: float, _idx: int = chain_idx) -> None:
+                        overall = (_idx + seg_p) / num_chains
+                        asyncio.run_coroutine_threadsafe(
+                            tracker.update_progress(job.job_id, overall), loop
+                        )
+
+                    entry = client.wait_for(
+                        prompt_id, poll_interval=3.0, max_wait=3600, progress_cb=progress_cb
+                    )
+                    rel = client.find_output_video(entry)
+                    if rel is None:
+                        raise ComfyUIError(
+                            f"chain {chain_idx}: no video in outputs: {entry.get('outputs')}"
+                        )
                     candidates = list(COMFYUI_OUTPUTS_DIR.rglob(rel.name))
-                    if candidates:
-                        src = candidates[0]
-                    else:
-                        raise ComfyUIError(f"saved video not found at {src}")
-                # Move into the served-outputs root for a cleaner URL
+                    if not candidates:
+                        raise ComfyUIError(
+                            f"chain {chain_idx}: saved video not found ({rel.name})"
+                        )
+                    src = candidates[0]
+                    seg_path = seg_dir / f"seg{chain_idx:02d}.mp4"
+                    shutil.copy2(src, seg_path)
+                    segments.append(seg_path)
+
+                    # For the next chain, extract the last frame to use as input image
+                    if chain_idx + 1 < num_chains:
+                        next_input = seg_dir / f"chain{chain_idx + 1}_input.png"
+                        extract_last_frame(seg_path, next_input)
+                        current_input = next_input
+
+                # Concat segments into a single mp4
                 dst = OUTPUTS_DIR / f"{job.job_id}.mp4"
-                shutil.copy2(src, dst)
+                concat_mp4s(segments, dst)
                 return f"/outputs/{job.job_id}.mp4"
             finally:
                 client.close()

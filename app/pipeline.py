@@ -32,10 +32,11 @@ DEFAULT_LORA_STRENGTH = 0.5
 # Inference defaults tuned for 16 GB Apple Silicon + LTX-2.3 (dev variant + distilled LoRA).
 DEFAULT_WIDTH = 512
 DEFAULT_HEIGHT = 320
-DEFAULT_LENGTH = 49      # frames; LTX wants 9 + 8k
+DEFAULT_LENGTH = 97      # frames; 9 + 8k. 97 @ 24fps = ~4s; LTX practical max is 121 (~5s).
 DEFAULT_STEPS = 15       # with distilled LoRA at 0.5; needs 25-30+ without LoRA
 DEFAULT_GUIDANCE = 3.5   # LTX-2.3 official workflow uses 3.6
 DEFAULT_FRAME_RATE = 24
+DEFAULT_NUM_CHAINS = 1   # >1 = chain mode: feed last frame of seg N into seg N+1's i2v
 
 # LTX-2.3 scheduler hyperparameters (from official ComfyUI template, not 0.9 defaults).
 LTX23_MAX_SHIFT = 2.72
@@ -329,4 +330,47 @@ def save_pil_image(img: Image.Image, dest: Path) -> Path:
     """Save a PIL image to a path as PNG. Returns the path."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     img.save(dest, format="PNG")
+    return dest
+
+
+def extract_last_frame(mp4_path: Path, dest_png: Path) -> Path:
+    """Extract the last frame of an mp4 as PNG. Used to chain segments in i2v mode."""
+    import imageio.v3 as iio
+
+    frames = iio.imread(mp4_path)  # numpy array [N, H, W, 3]
+    if frames.ndim != 4 or frames.shape[0] == 0:
+        raise ValueError(f"unexpected video shape: {frames.shape}")
+    last = Image.fromarray(frames[-1])
+    dest_png.parent.mkdir(parents=True, exist_ok=True)
+    last.save(dest_png, format="PNG")
+    return dest_png
+
+
+def concat_mp4s(segments: list[Path], dest: Path) -> Path:
+    """Concat a list of mp4 files into one (no re-encode; all must share codec/params)."""
+    import subprocess
+
+    import imageio_ffmpeg
+
+    if not segments:
+        raise ValueError("no segments to concat")
+    if len(segments) == 1:
+        # Single segment: just copy
+        import shutil
+
+        shutil.copy2(segments[0], dest)
+        return dest
+
+    list_file = dest.with_suffix(".concat.txt")
+    with open(list_file, "w") as f:
+        for s in segments:
+            # ffmpeg concat demuxer needs `file 'path'` lines
+            f.write(f"file '{s.resolve()}'\n")
+    ff = imageio_ffmpeg.get_ffmpeg_exe()
+    cmd = [ff, "-y", "-f", "concat", "-safe", "0", "-i", str(list_file),
+           "-c", "copy", str(dest)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    list_file.unlink(missing_ok=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"ffmpeg concat failed: {r.stderr[-500:]}")
     return dest
