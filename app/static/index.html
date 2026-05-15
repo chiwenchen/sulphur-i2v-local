@@ -44,8 +44,11 @@
           <label>Height
             <input id="height" type="number" value="320" step="32" min="256" max="1024">
           </label>
-          <label>Length (frames; 9 + 8k)
-            <input id="length" type="number" value="49" step="8" min="9" max="121">
+          <label>Length per segment (frames; 9 + 8k)
+            <input id="length" type="number" value="97" step="8" min="9" max="121">
+          </label>
+          <label>Number of chained segments (1 = single shot)
+            <input id="num-chains" type="number" value="1" min="1" max="8">
           </label>
           <label>Steps (15 w/ distilled LoRA; bump to 30 without)
             <input id="steps" type="number" value="15" min="2" max="50">

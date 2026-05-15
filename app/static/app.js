@@ -85,7 +85,7 @@ dropzone.addEventListener("drop", (e) => {
 function setBusy(busy) {
   for (const id of [
     "image-input", "prompt", "negative-prompt", "seed", "width", "height",
-    "length", "steps", "guidance", "frame-rate",
+    "length", "steps", "guidance", "frame-rate", "num-chains",
   ]) {
     const e = document.getElementById(id);
     if (e) e.disabled = busy;
@@ -120,6 +120,7 @@ async function submitJob() {
   fd.append("steps", el("steps").value);
   fd.append("guidance", el("guidance").value);
   fd.append("frame_rate", el("frame-rate").value);
+  fd.append("num_chains", el("num-chains").value);
 
   let jobId;
   try {

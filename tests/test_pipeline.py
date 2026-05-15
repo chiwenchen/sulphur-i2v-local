@@ -9,9 +9,13 @@ import httpx
 import pytest
 
 from app.pipeline import (
+    DEFAULT_LENGTH,
+    DEFAULT_NUM_CHAINS,
     ComfyUIClient,
     ComfyUIError,
     build_i2v_workflow,
+    concat_mp4s,
+    extract_last_frame,
 )
 
 
@@ -105,6 +109,69 @@ class TestBuildWorkflow:
     def test_sampler_is_euler_ancestral(self) -> None:
         wf = build_i2v_workflow(image_filename="i.png", prompt="x", seed=0)
         assert wf["sampler_select"]["inputs"]["sampler_name"] == "euler_ancestral"
+
+    def test_default_length_gives_about_four_seconds(self) -> None:
+        # 97 frames @ 24 fps ≈ 4.04s, the new MVP default after PR #4 follow-up.
+        assert DEFAULT_LENGTH == 97
+        assert DEFAULT_NUM_CHAINS == 1
+
+
+class TestVideoHelpers:
+    """Cover extract_last_frame + concat_mp4s used by the chain pipeline."""
+
+    def _make_mp4(self, dest: Path, *, frames: int = 6, color: tuple[int, int, int] = (40, 80, 200)) -> Path:
+        import imageio.v3 as iio
+        import numpy as np
+
+        h, w = 64, 64
+        arr = np.zeros((frames, h, w, 3), dtype=np.uint8)
+        for i in range(frames):
+            # vary one channel per frame so last_frame is identifiable
+            arr[i, :, :, 0] = (color[0] + i * 10) % 256
+            arr[i, :, :, 1] = color[1]
+            arr[i, :, :, 2] = color[2]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        iio.imwrite(dest, arr, fps=24, codec="libx264", macro_block_size=1)
+        return dest
+
+    def test_extract_last_frame(self, tmp_path: Path) -> None:
+        # We bump R channel +10 per frame, so last frame's R should be noticeably
+        # greater than first frame's R, even after H.264 quantization (±2).
+        mp4 = self._make_mp4(tmp_path / "src.mp4", frames=6)
+        out = tmp_path / "last.png"
+        extract_last_frame(mp4, out)
+        assert out.exists()
+        from PIL import Image as PILImage
+
+        img = PILImage.open(out)
+        r_last = img.convert("RGB").getpixel((0, 0))[0]
+        # First frame R was 40; last frame R was 40 + 5*10 = 90 pre-compression.
+        # H.264 may shift by a few units; require strictly greater than start.
+        assert r_last > 60, f"expected R > 60 at last frame, got {r_last}"
+
+    def test_concat_single_segment_copies(self, tmp_path: Path) -> None:
+        mp4 = self._make_mp4(tmp_path / "seg0.mp4", frames=4)
+        dst = tmp_path / "final.mp4"
+        concat_mp4s([mp4], dst)
+        assert dst.exists()
+        assert dst.stat().st_size == mp4.stat().st_size
+
+    def test_concat_multiple_segments(self, tmp_path: Path) -> None:
+        a = self._make_mp4(tmp_path / "seg0.mp4", frames=6, color=(50, 50, 50))
+        b = self._make_mp4(tmp_path / "seg1.mp4", frames=6, color=(150, 50, 50))
+        dst = tmp_path / "concat.mp4"
+        concat_mp4s([a, b], dst)
+        assert dst.exists()
+        # Re-read and ensure the combined file has more frames than either segment
+        import imageio.v3 as iio
+
+        total = iio.imread(dst)
+        assert total.shape[0] >= 10  # 6 + 6 minus possible single-frame trim
+        assert total.shape[0] <= 12
+
+    def test_concat_empty_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError):
+            concat_mp4s([], tmp_path / "out.mp4")
 
 
 class TestComfyUIClient:
