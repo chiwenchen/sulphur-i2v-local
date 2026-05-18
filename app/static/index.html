@@ -50,11 +50,14 @@
           <label>Number of chained segments (1 = single shot)
             <input id="num-chains" type="number" value="1" min="1" max="8">
           </label>
-          <label>Steps (15 w/ distilled LoRA; bump to 30 without)
-            <input id="steps" type="number" value="15" min="2" max="50">
+          <label>Steps (20 w/ LoRA 0.35; bump to 30+ if LoRA off)
+            <input id="steps" type="number" value="20" min="2" max="50">
           </label>
           <label>Guidance scale
             <input id="guidance" type="number" value="3.5" step="0.1" min="1" max="10">
+          </label>
+          <label>LoRA strength (0 = off; lower = sharper but more steps needed)
+            <input id="lora-strength" type="number" value="0.35" step="0.05" min="0" max="1">
           </label>
           <label>Frame rate (fps)
             <input id="frame-rate" type="number" value="24" min="8" max="60">

@@ -25,15 +25,17 @@ DEFAULT_VAE = "LTX23_video_vae_bf16.safetensors"
 # In ComfyUI 0.21+, CLIPType.LTXV is the Gemma 3 12B / LTX-AV text encoder pair.
 DEFAULT_TEXT_ENCODER = "gemma-3-12b-it-Q4_K_S.gguf"
 DEFAULT_TEXT_PROJECTION = "ltx-2.3_text_projection_bf16.safetensors"
-# Distilled LoRA shipped with Sulphur-2-base; lets us use ~15 steps instead of 30+.
+# Distilled LoRA shipped with Sulphur-2-base; lets us use 20-step inference.
 DEFAULT_DISTILL_LORA = "ltx-2.3-22b-distilled-lora-1.1_fro90_ceil72_condsafe.safetensors"
-DEFAULT_LORA_STRENGTH = 0.5
+# Dropped from 0.5 → 0.35: 0.5 over-applies the distilled signal and produces
+# watercolor/wax-skin artifacts. 0.35 keeps sample-step savings without smudging.
+DEFAULT_LORA_STRENGTH = 0.35
 
 # Inference defaults tuned for 16 GB Apple Silicon + LTX-2.3 (dev variant + distilled LoRA).
 DEFAULT_WIDTH = 512
 DEFAULT_HEIGHT = 320
 DEFAULT_LENGTH = 97      # frames; 9 + 8k. 97 @ 24fps = ~4s; LTX practical max is 121 (~5s).
-DEFAULT_STEPS = 15       # with distilled LoRA at 0.5; needs 25-30+ without LoRA
+DEFAULT_STEPS = 20       # bumped 15 → 20 for cleaner denoising at 0.35 LoRA strength.
 DEFAULT_GUIDANCE = 3.5   # LTX-2.3 official workflow uses 3.6
 DEFAULT_FRAME_RATE = 24
 DEFAULT_NUM_CHAINS = 1   # >1 = chain mode: feed last frame of seg N into seg N+1's i2v
@@ -191,8 +193,17 @@ def build_i2v_workflow(
             },
         },
         "decode": {
-            "class_type": "VAEDecode",
-            "inputs": {"samples": ["sample", 0], "vae": ["vae_loader", 0]},
+            # Tiled VAE decode: cleaner edges on character/background transitions
+            # plus lower peak memory than VAEDecode at the same resolution.
+            "class_type": "VAEDecodeTiled",
+            "inputs": {
+                "samples": ["sample", 0],
+                "vae": ["vae_loader", 0],
+                "tile_size": 256,
+                "overlap": 64,
+                "temporal_size": 64,
+                "temporal_overlap": 8,
+            },
         },
         "create_video": {
             "class_type": "CreateVideo",

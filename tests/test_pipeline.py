@@ -10,7 +10,9 @@ import pytest
 
 from app.pipeline import (
     DEFAULT_LENGTH,
+    DEFAULT_LORA_STRENGTH,
     DEFAULT_NUM_CHAINS,
+    DEFAULT_STEPS,
     ComfyUIClient,
     ComfyUIError,
     build_i2v_workflow,
@@ -36,7 +38,7 @@ class TestBuildWorkflow:
         assert "LTXVImgToVideo" in node_types
         assert "LTXVConditioning" in node_types
         assert "SamplerCustomAdvanced" in node_types
-        assert "VAEDecode" in node_types
+        assert "VAEDecodeTiled" in node_types
         assert "SaveVideo" in node_types
 
     def test_prompt_injected(self) -> None:
@@ -114,6 +116,24 @@ class TestBuildWorkflow:
         # 97 frames @ 24 fps ≈ 4.04s, the new MVP default after PR #4 follow-up.
         assert DEFAULT_LENGTH == 97
         assert DEFAULT_NUM_CHAINS == 1
+
+    def test_quality_tuning_defaults(self) -> None:
+        # Round-2 quality tuning: lower LoRA strength, more steps.
+        assert DEFAULT_LORA_STRENGTH == 0.35
+        assert DEFAULT_STEPS == 20
+
+    def test_vae_decode_is_tiled(self) -> None:
+        # VAEDecodeTiled gives cleaner edges + lower peak memory vs VAEDecode.
+        wf = build_i2v_workflow(image_filename="i.png", prompt="x", seed=0)
+        assert wf["decode"]["class_type"] == "VAEDecodeTiled"
+        assert wf["decode"]["inputs"]["tile_size"] == 256
+        assert wf["decode"]["inputs"]["overlap"] == 64
+
+    def test_lora_strength_override(self) -> None:
+        wf = build_i2v_workflow(
+            image_filename="i.png", prompt="x", seed=0, lora_strength=0.2
+        )
+        assert wf["lora_loader"]["inputs"]["strength_model"] == 0.2
 
 
 class TestVideoHelpers:
