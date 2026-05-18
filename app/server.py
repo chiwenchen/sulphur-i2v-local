@@ -20,6 +20,7 @@ from app.pipeline import (
     DEFAULT_GUIDANCE,
     DEFAULT_HEIGHT,
     DEFAULT_LENGTH,
+    DEFAULT_LORA_STRENGTH,
     DEFAULT_NUM_CHAINS,
     DEFAULT_STEPS,
     DEFAULT_WIDTH,
@@ -88,6 +89,7 @@ def create_app(tracker: JobTracker | None = None) -> FastAPI:
         guidance: float = Form(DEFAULT_GUIDANCE),
         frame_rate: int = Form(DEFAULT_FRAME_RATE),
         num_chains: int = Form(DEFAULT_NUM_CHAINS),
+        lora_strength: float = Form(DEFAULT_LORA_STRENGTH),
     ) -> JSONResponse:
         if not prompt.strip():
             raise HTTPException(status_code=422, detail="prompt is required")
@@ -95,6 +97,8 @@ def create_app(tracker: JobTracker | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=f"not an image: {image.content_type}")
         if num_chains < 1 or num_chains > 8:
             raise HTTPException(status_code=422, detail="num_chains must be 1..8")
+        if not 0.0 <= lora_strength <= 1.0:
+            raise HTTPException(status_code=422, detail="lora_strength must be in [0, 1]")
 
         # Save the uploaded image to a stable location
         input_id = uuid.uuid4().hex
@@ -116,6 +120,7 @@ def create_app(tracker: JobTracker | None = None) -> FastAPI:
             "guidance": guidance,
             "frame_rate": frame_rate,
             "num_chains": num_chains,
+            "lora_strength": lora_strength,
         }
 
         job = await app.state.tracker.try_claim(prompt, params, str(input_path))
@@ -192,6 +197,7 @@ async def _run_job(app: FastAPI, job: Job, input_path: Path) -> None:
                         steps=p["steps"],
                         guidance=p["guidance"],
                         frame_rate=p["frame_rate"],
+                        lora_strength=p.get("lora_strength", DEFAULT_LORA_STRENGTH),
                         output_prefix=f"i2v_{job.job_id[:8]}_seg{chain_idx}",
                     )
                     prompt_id = client.submit(wf)
